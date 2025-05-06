@@ -74,6 +74,47 @@ def log_p_y_given_x(y, x):
     mvn = MultivariateNormal(A(x), sigma_y**2)
     return mvn.log_prob(y)
 
+def get_targert_hist(y, sigma_y, n_bins):
+    ''' compute the target histogram of x given y by numerically comuting the posterior p(x|y)'''
+    x_ = torch.linspace(-3, 7, 10000)
+    dx = x_[1] - x_[0]
+    log_p_x = log_pt(x_, ts[0]).squeeze(-1)
+    log_py_x = log_p_y_given_x(y * torch.ones_like(x_), x_, sigma_y)
+    log_px_y = log_py_x + log_p_x
+    px_y = torch.exp(log_px_y)
+    px_y = (px_y[:-1] + px_y[1:])/2 * dx
+    pdf = px_y/px_y.sum()/dx
+
+    # compute the 99.8 % interval
+    cdf = pdf.cumsum(axis = 0) * dx
+    xmin = x_[torch.where(cdf >= 0.0001)[0][0]]
+    xmax = x_[torch.where(cdf >= 0.9999)[0][0]]
+    x_range = xmax - xmin
+    Dx = float(x_range/n_bins)
+    edges = np.linspace(xmin, xmax, n_bins+1)
+
+    posterior_bar = torch.zeros(n_bins)
+    for i in range(n_bins):
+        x_ = torch.linspace(edges[i], edges[i+1], 101)
+        # print(edges[i], edges[i+1])
+        dx = x_[1] - x_[0]
+        log_p_x = log_pt(x_, ts[0]).squeeze(-1)
+        log_py_x = log_p_y_given_x(y * torch.ones_like(x_), x_, sigma_y)
+        log_px_y = log_py_x + log_p_x
+        px_y = torch.exp(log_px_y)
+        posterior_bar[i] = (px_y[:-1] + px_y[1:]).sum()/(2)
+    posterior_bar = posterior_bar/posterior_bar.sum()/Dx
+    
+
+    return posterior_bar, edges, Dx
+
+def get_target_hist_with_tw(y, t, sigma_y, n_bins):
+    ''' compute the analytic posterior p(x|y) 
+    using the tweedie approximation for p(x0|xt)
+    p(x0|y)
+    '''
+    pass
+
 def get_mu_from_xt(xt: tensor, t = 1):
     sc = score_pt(xt, t)
     if sc.isnan().any():
