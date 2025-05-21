@@ -26,6 +26,7 @@ import numpy as np
 from pdediff.mcs import curl
 from pdediff.mcs import KolmogorovFlow
 
+# import pdb
 
 def check_experiment_name(name: str, amortized: bool = False):
     if amortized:
@@ -216,16 +217,17 @@ def main(cfg):
             print("Loading the ckpt")
             training_dir = pdediff_eval.get_training_dir(current_dir, cfg)
             ckpt_path = Path(os.path.join(training_dir, cfg.ckpt_dir, cfg.eval.load_model_name))
+            ckpt_path = Path('/scratches/cartwright/cdd43/pdediff/results/KS_joint_SDA/epochs=4000,window=9/0/ckpt/score_last.pth') 
             score = load_score(ckpt_path)
             print('Checkpoint path', ckpt_path)
 
         sampler = get_sampler(cfg)
 
         if "conditional" not in cfg.name and 'amortized' not in cfg.name:
-
+            print('Not conditional or Amortized') 
             if not check_experiment_name(cfg.name, False):
                 raise NotImplementedError(f'{cfg.name} experiment is not implemented.')
-
+            # pdb.ste_trace()
             logger_dir = Path(os.path.join(current_dir, logger.log_dir, "sampling_data"))
             os.makedirs(logger_dir, exist_ok=True)
 
@@ -240,7 +242,9 @@ def main(cfg):
                     pdediff_eval.plot_trajectories(true_x, logger, num_plot_samples, plot_name="true_test_samples", cfg=cfg)
 
                 # Get conditioning information
-                y_true, mask = get_conditioning(true_x, cfg)
+                # TODO: Get A
+                # pdb.set_trace()
+                y_true, mask, A = get_conditioning(true_x, cfg) # returns entire conditioning data for trajectory
 
                 if cfg.eval.task == "data_assimilation" and cfg.eval.DA.online:
                     sampled_x, true_x, true_mask = sampling.get_cond_DA_online(
@@ -258,9 +262,13 @@ def main(cfg):
                     if cfg.eval.rollout_type=="all_at_once":
                         sampled_x = sampling.get_cond_aao_samples(score, y_true, sampler, cfg, logger, mask)
                     elif cfg.eval.rollout_type=="autoregressive":
-                        sampled_x = sampling.get_cond_ar_samples(score, y_true, sampler, cfg, logger, mask)
+                        # TODO: Pass A
+                        print('Autoregressive sampling')    
+                        # pdb.set_trace()
+                        # AR Sampling done here
+                        sampled_x = sampling.get_cond_ar_samples(score, y_true, sampler, cfg, logger, mask, A, N_MC_samples)
                     else:
-                        raise ValueError(f"Unsupported rollout_type {cfg.eval.rollout_type}, needs to be all_at_once or autoregressive")
+                        raise ValueError(f"Unsupported rollout_type {cfg.eval.rollout_type}, needs to be all_at_once or autoregressive") # wait, this is where we sample
                     true_mask = None
 
                 pdediff_eval.plot_trajectories(sampled_x[:5], logger, num_plot_samples, plot_name="samples", cfg=cfg)
@@ -268,6 +276,7 @@ def main(cfg):
 
                 # Save generated trajectory
                 os.makedirs(os.path.join(logger_dir, "trajectories"), exist_ok=True)
+                # path = '/scratches/kolmogorov_2/kk753/pdediff/results/KS_joint_SDA/eval.forecast.n_samples=6,eval.forecast.trajectory_length=12,eval.load_model_name=score_last.pth,eval.task=data_assimilation,window=9/0/logs/version_2/sampling_data/trajectories'
                 pdediff_eval.save_metric(sampled_x, os.path.join(logger_dir, "trajectories"), cfg)
 
                 # Save mask
@@ -278,6 +287,9 @@ def main(cfg):
                 if true_mask is not None:
                     os.makedirs(os.path.join(logger_dir, "true_masks"), exist_ok=True)
                     pdediff_eval.save_metric(true_mask, os.path.join(logger_dir, "true_masks"), cfg)
+                if y_true is not None:
+                    os.makedirs(os.path.join(logger_dir, "y_true"), exist_ok=True)
+                    pdediff_eval.save_metric(y_true, os.path.join(logger_dir, "y_true"), cfg)
 
                 # For Kolmogorov we compute the matrics on the vorticity, rather than velocity field
                 if "kolmogorov" in cfg.name:
@@ -317,12 +329,12 @@ def main(cfg):
                 print('Mse = ', mse.mean(axis=1).sqrt().mean())
         
             elif cfg.eval.conditioning == False:
-                sampled_x = sampling.get_uncond_aao_samples(score, sampler, cfg, logger)
+                sampled_x = sampling.get_uncond_aao_samples(score, sampler, cfg, logger, A)
             else:
                 raise ValueError(f"Unsupported conditioning {cfg.eval.conditioning}")
         
         elif 'conditional' in cfg.name or 'amortized' in cfg.name:
-
+            print('Conditional or Amortized')
             if not check_experiment_name(cfg.name, True):
                 raise NotImplementedError(f'{cfg.name} experiment is not implemented.')
               
@@ -330,8 +342,11 @@ def main(cfg):
                 likelihood = guidance.Gaussian
                 likelihood_std = cfg.eval.guidance.std
                 gamma = cfg.eval.guidance.gamma
+                N_MC_samples = cfg.eval.guidance.N_MC_samples
                 if cfg.eval.guidance.type == "SDA":
                     guidance_type = guidance.SDA
+                # elif cfg.eval.guidance.type == "MC_SDA":# this in not AR sampling
+                #     guidance_type = guidance.MC_SDA
                 elif cfg.eval.guidance.type == "DPS":
                     guidance_type = guidance.DPS
                 elif cfg.eval.guidance.type == 'VideoDiff':

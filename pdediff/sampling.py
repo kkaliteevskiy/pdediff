@@ -6,6 +6,8 @@ import pdediff.guidance as guidance
 import pdediff.eval as pdediff_eval
 from pdediff.viz.plotting import plot_kolmogorov_vorticity_trajectories
 from pdediff.utils.data_preprocessing import get_y_DA_online, append_data_ar, append_data
+from functools import partial
+
 
 # Conditional sampling AAO
 def get_cond_aao_samples(score, y_true, sampler, cfg, logger, mask=None,):
@@ -70,15 +72,22 @@ def get_cond_aao_samples(score, y_true, sampler, cfg, logger, mask=None,):
             step=cfg.eval.sampling.steps,
         )
     return all_conditional_samples
-
-def get_cond_ar_samples(score, y_true, sampler, cfg, logger, mask = None):
+# TODO: Accept A
+def get_cond_ar_samples(score, y_true, sampler, cfg, logger, mask = None, A_obs = None):
+    if A_obs is None:
+        raise ValueError("observation operator A() is not provided")
     test_batch_size = cfg.eval.forecast.test_batch_size
     num_plot_samples = min(test_batch_size, 10)
     all_conditional_samples = []
 
     # Type of guidance
+    print('cfg.eval.guidance.type:', cfg.eval.guidance.type)    
     if cfg.eval.guidance.type == "SDA":
         guidance_term = guidance.SDA
+    elif cfg.eval.guidance.type == "MC_SDA":
+        guidance_term = partial(guidance.MC_SDA, N_MC_samples=cfg.eval.guidance.N_MC_samples)
+    elif cfg.eval.guidance.type == "MC_SDA_IS":
+        guidance_term = partial(guidance.MC_SDA_IS, N_MC_samples=cfg.eval.guidance.N_MC_samples)
     elif cfg.eval.guidance.type == "DPS":
         guidance_term = guidance.DPS
     elif cfg.eval.guidance.type == 'VideoDiff':
@@ -89,13 +98,15 @@ def get_cond_ar_samples(score, y_true, sampler, cfg, logger, mask = None):
         raise ValueError(f"{guidance_term} is not supported")
     
     # The conditioning variables are the (masked) trajectories
-    def A(x, _mask):
-        return x * _mask
-
+    # TODO: Pass A and apply mask
+    def A(x, _mask): # TODO : is this just the masking operation?
+        return A_obs(x) * _mask # A_obs is passed as an argument
+    print('guidance type:', cfg.eval.guidance.type, guidance_term)
     # Supported tasks are forecast and data_assimilation
     if cfg.eval.task in ["forecast", "data_assimilation"]:
         for batch_y_true, batch_mask in zip(y_true.split(test_batch_size), mask.split(test_batch_size)):
             
+            # define the sampler
             conditional_sampler_autoregressive = rollout.ConditionalARRollout(
                     unconditional_score=score,
                     state_shape=tuple(cfg.data.state_shape),
@@ -111,9 +122,14 @@ def get_cond_ar_samples(score, y_true, sampler, cfg, logger, mask = None):
                     sampler = sampler,
                     model_type=cfg.model_type,
                     task=cfg.eval.task,
+                    N_MC_samples=cfg.eval.guidance.N_MC_samples,
             )
+            print('created AR sampler, N_MC_samples:', conditional_sampler_autoregressive.N_MC_samples)
 
             t0 = time.time()
+            # sample the trajectory
+            # pdb.set_trace()
+            # set breakpoint here
             conditional_samples = conditional_sampler_autoregressive.sample_traj(
                 trajectory_length=cfg.eval.forecast.trajectory_length,
                 y_conditioning=batch_y_true,
@@ -182,7 +198,7 @@ def get_cond_DA_online(score, y_true, sampler, cfg, logger = None, mask = None, 
         for batch_y_true, batch_mask in zip(y_true_subtraj.split(test_batch_size), 
                                                         mask_subtraj.split(test_batch_size) 
                                                         ):
-            def A(x, _mask):
+            def A(x, _mask): # TODO : fix this, because that will not be the observation
                 return x * _mask
             
             if cfg.eval.rollout_type == "autoregressive":

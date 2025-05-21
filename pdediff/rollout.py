@@ -220,7 +220,7 @@ class ConditionalRolloutAllAtOnce(Rollout):
 
         return x
 
-class ConditionalARRollout(Rollout):
+class ConditionalARRollout(Rollout): # TODO
     def __init__(
         self,
         unconditional_score: MCScoreNet,
@@ -237,6 +237,7 @@ class ConditionalARRollout(Rollout):
         sampler: Sampler = None,
         model_type: str = "noise",
         task: str = "forecast",
+        N_MC_samples: Optional[int] = None,
     ):
         super().__init__(unconditional_score, state_shape, steps, corrections, tau, sampler)
 
@@ -265,6 +266,7 @@ class ConditionalARRollout(Rollout):
         self.likelihoods = likelihoods
         self.guidance = guidance
         self.likelihood_stds = likelihood_stds
+        self.N_MC_samples = N_MC_samples
 
         assert len(likelihoods)==2, (
             f"For AR rollout you should specify two likelihoods - "
@@ -285,6 +287,8 @@ class ConditionalARRollout(Rollout):
         self.gammas = gammas
         self.model_type = model_type
         self.task = task
+
+        print('created AR rollout with N_MC_samples', N_MC_samples) 
 
 
     def sample_traj_conditioning(
@@ -385,14 +389,14 @@ class ConditionalARRollout(Rollout):
                 sub_mask[:, :n_conditioned_frame, :] = 0
                 x_star = A_autoregressive_step(sampled_traj[:, idx_start:idx_end, ...])
 
-                cond_on_obs_likelihood = self.likelihoods[0](
+                cond_on_obs_likelihood = self.likelihoods[0]( # What is the difference between this and the one below? this is the observation likelihood
                     y=sub_y * sub_mask, 
                     A=self.A,  
                     std=self.likelihood_stds[0],
                     mask=sub_mask,
                 )
 
-                cond_AR_likelihood = self.likelihoods[1](
+                cond_AR_likelihood = self.likelihoods[1](# see above - this is AR likelihood
                     y=x_star,
                     A=A_autoregressive_step, 
                     std=self.likelihood_stds[1],
@@ -423,6 +427,7 @@ class ConditionalARRollout(Rollout):
 
                 sde.eval()
 
+                # pdb.set_trace()
                 if self.sampler is None:
                     x = sde.sample(
                         steps=self.steps,
@@ -457,7 +462,7 @@ class ConditionalARRollout(Rollout):
                     )
                 else:
                     raise ValueError(f"{self.task} is not supported")
-                print("Sampled traj shape", sampled_traj.shape)
+                print("Sampled traj shape", sampled_traj.shape, ", min and max", sampled_traj[:,-9:].min().item(), ",", sampled_traj[:,-9:].max().item())    
 
             idx_start += stride
             idx_end += stride
@@ -484,6 +489,7 @@ class AmortizedRollout(Rollout):
         guidance: Optional[GuidedScore] = None,
         likelihood_std: Optional[float] = None,
         gamma: Optional[float] = None,
+        # N_MC_samples: Optional[int] = None,
         **kwargs,
     ):
         super().__init__(

@@ -20,13 +20,29 @@ def get_true_x(data, cfg):
 def get_conditioning(x, cfg):
     np.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
+
+    # TODO: change A operator to accept arg non-linearity
+
+    # old code
+
     # In this case, the A operator is just the observation
-    def A(x):
-        # The conditioning information are just the observations
+    # def A(x):
+    #     # The conditioning information are just the observations
+    #     if cfg.eval.task in ["forecast", "data_assimilation"]:  
+    #         return x
+    #     else:
+    #         raise ValueError(f"{cfg.eval.task} is not supported")
+
+    # define the observation operator
+    
+    def A(x): # why is mask passed as an argument on line 123 ???
         if cfg.eval.task in ["forecast", "data_assimilation"]:  
-            return x
+            a = 1
+            return a * torch.tanh(x / a)
         else:
             raise ValueError(f"{cfg.eval.task} is not supported")
+       
+    
     to_append = cfg.eval.forecast.predictive_horizon - (cfg.eval.forecast.trajectory_length - cfg.window)%cfg.eval.forecast.predictive_horizon
     # Supported tasks are forecast and data_assimilation
     if cfg.eval.task == "forecast":
@@ -123,7 +139,8 @@ def get_conditioning(x, cfg):
             ), 
             dim = 1
         )
-    return y_true, mask
+    # TODO: Return A too
+    return y_true, mask, A
 
 
 def get_y_DA_online(forecast_length, step, y_true, mask, spatial):

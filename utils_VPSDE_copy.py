@@ -26,7 +26,7 @@ sde = VPSDE(tensor([1e-12]), tensor([1.0]).shape)
 # observation operator
 def obs(x):
     a = 1
-    return a * torch.tanh((x)/a)
+    return  x # a * torch.tanh((x)/a)
 A = obs
 
 def sample_p0(n):
@@ -55,8 +55,9 @@ def score_pt(xt, t): # xt[samples, dims]
     grads = torch.autograd.grad(log_p, xt, torch.ones_like(log_p))[0]
     return grads
 
-def log_p_y_given_x(y, x, sigma_y):
-    mvn = Normal(A(x), sigma_y)
+def log_p_y_given_x(y, x, sigma_y, t = tensor(0.0), gamma = 0.1):
+    var = (sigma_y**2 + gamma*sde.sigma(t)**2/sde.mu(t)**2)
+    mvn = Normal(A(x), var**0.5)
     return mvn.log_prob(y)
     # mvn = MultivariateNormal(A(x), (sigma_y**2).reshape(1,1))
     # return mvn.log_prob(y)
@@ -81,7 +82,7 @@ def get_guidance(xt, y, t, n_samples = 100, sigma_y = sigma_y, use_normaliser = 
     x_hats = mu + sigma * torch.randn(n_samples, *mu.shape)
     # if x_hats.isnan().any():
     #     print('nan in x_hats')
-    log_p_y_ests = log_p_y_given_x(y, x_hats, sigma_y)
+    log_p_y_ests = log_p_y_given_x(y, x_hats, sigma_y, t=t)
     log_p_est = torch.logsumexp(log_p_y_ests, dim=0)
     grads = torch.autograd.grad(log_p_est, xt, torch.ones_like(log_p_est))[0]
     
@@ -90,11 +91,11 @@ def get_guidance(xt, y, t, n_samples = 100, sigma_y = sigma_y, use_normaliser = 
         grads = grads * normaliser
     return grads, x_hats
 
-def get_cov_from_xt(xt, t): #NOTE: this isn't used any more?
-    log_p = torch.log(pt(xt, t))
-    grads_1 = torch.autograd.grad(log_p, xt, torch.ones_like(log_p), create_graph=True)[0]
-    grads_2 = torch.autograd.grad(grads_1, xt, torch.ones_like(grads_1))[0]
-    return grads_2 #  sigmas2_total[t] + sigmas2_total[t]**2 * 
+# def get_cov_from_xt(xt, t): #NOTE: this isn't used any more?
+#     log_p = torch.log(pt(xt, t))
+#     grads_1 = torch.autograd.grad(log_p, xt, torch.ones_like(log_p), create_graph=True)[0]
+#     grads_2 = torch.autograd.grad(grads_1, xt, torch.ones_like(grads_1))[0]
+#     return grads_2 #  sigmas2_total[t] + sigmas2_total[t]**2 * 
 
 
 def log_p_x0_given_y_xt(y, x0, xt, t, sigma_y = sigma_y): # shape x0 = [MC_sample, n_smaples, dims]
@@ -152,7 +153,7 @@ def get_guidance_IS(y, xt, t, n_samples = 1, sigma_y = sigma_y, use_normaliser =
     x_hats, log_p_proposal = sample_x0_given_y_xt(y, xt, t, n_samples, sigma_y)
     log_p_x0_given_xt_sampled = log_p_tweedie(x_hats, xt, t) # seems legit
     # log_p_proposal = log_p_x0_given_y_xt(y, x_hats, xt, t, sigma_y) # needs to be rewritten
-    log_p_likelihood = log_p_y_given_x(y, x_hats, sigma_y).sum(-1) # p(y|x0_hat) NOTE: sum over dims
+    log_p_likelihood = log_p_y_given_x(y, x_hats, sigma_y, t=t).sum(-1) # p(y|x0_hat) NOTE: sum over dims
     log_importance_estimates = log_p_likelihood - log_p_proposal + log_p_x0_given_xt_sampled
     log_prob = torch.logsumexp(log_importance_estimates, dim=0)
     grads = torch.autograd.grad(log_prob, xt, torch.ones_like(log_prob))[0]
@@ -223,7 +224,7 @@ def get_guidance_IS_2(y, xt, t, n_samples = 1, sigma_y = sigma_y, use_normaliser
     x_hats, log_p_proposal = sample_x0_given_y_xt_2(y, xt, t, n_samples, sigma_y) # .sum(-1)
     log_p_proposal = log_p_proposal.sum(-1) # sum over dims
     log_p_target = log_p_tweedie(x_hats, xt, t) # seems legit
-    log_p_likelihood = log_p_y_given_x(y, x_hats, sigma_y).sum(-1) # .sum(-1)
+    log_p_likelihood = log_p_y_given_x(y, x_hats, sigma_y, t=t).sum(-1) # .sum(-1)
     log_prob = log_p_likelihood - log_p_proposal + log_p_target
     log_prob = torch.logsumexp(log_prob, dim=0)
     grads = torch.autograd.grad(log_prob, xt, torch.ones_like(log_prob))[0]
