@@ -215,6 +215,7 @@ class MC_SDA_IS(GuidedScore):
                 "a guidance strength for each likelihood."
             )
             self.N_MC_samples = N_MC_samples
+            print('initialised MC_SDA_IS with N_MC_samples = ', self.N_MC_samples)  
         
     def sample_x_hats(self, y: Tensor, x_: Tensor, t: Tensor, n_smples=1, sigma_y=1.0) -> Tensor:
         # Returns x_hats: [n_smples, *x.shape]
@@ -222,7 +223,7 @@ class MC_SDA_IS(GuidedScore):
         x_hats = torch.zeros((n_smples, *x_.shape), device=x_.device, dtype=x_.dtype)
         mu_tweedie = x_ # tweedie mean  
         Amu = self.likelihoods[0].A(mu_tweedie, self.likelihoods[0].mask.to(x_.device)).requires_grad_(True)
-        partial_A = torch.autograd.grad(Amu, mu_tweedie, torch.ones_like(mu_tweedie),retain_graph=True)[0] + 1e-6 # add small constant to avoid division by zero
+        partial_A = torch.autograd.grad(Amu, mu_tweedie, torch.ones_like(mu_tweedie),retain_graph=True)[0] + 1e-12 # add small constant to avoid division by zero
 
         mu1 = mu_tweedie + (y - Amu) / partial_A 
         std1 = sigma_y / partial_A
@@ -239,10 +240,6 @@ class MC_SDA_IS(GuidedScore):
         log_p = mvn.log_prob(x_hats) #  * self.likelihoods[0].mask.to(x_hats.device)
 
         return x_hats, log_p
-
-
-
-        return None
         
     def log_p_tweedie(self, x: Tensor, t: Tensor, x_: Tensor) -> Tensor:
         mu, sigma = self.sde.mu(t), self.sde.sigma(t)
@@ -298,9 +295,6 @@ class MC_SDA_IS(GuidedScore):
                 for likelihood, gamma in zip([self.likelihoods[0]], [self.gammas[0]]):
                     y = likelihood.y.to(x.device)
                     sigma_y = likelihood.std
-                    # TODO implement next 2 lines
-                    # does everything need to be looped over for N_MC or can it be vectorised???
-                    # pdb.set_trace()
                     x_hats, log_p_proposal = self.sample_x_hats(y, x_, t, n_smples = self.N_MC_samples, sigma_y = sigma_y)
                     x_hats = x_hats * likelihood.mask.to(x.device)
                     log_p_proposal = log_p_proposal * likelihood.mask.to(x.device)
@@ -324,6 +318,115 @@ class MC_SDA_IS(GuidedScore):
                     eps = eps - sigma * s * self.likelihoods[0].mask.to(eps.device) # why is this premultiplied by sigma?
 
         return eps
+
+        
+class MC_SDA_IS_1(GuidedScore):
+    def __init__(
+            self,
+            sde: VPSDE,
+            likelihoods: List[Likelihood],
+            gammas: List[float],
+            N_MC_samples: int = 1
+        ):
+            super().__init__(sde, likelihoods)
+            self.gammas = gammas
+            assert len(likelihoods) == len(gammas), (
+                f"Number of specified likelihoods {len(likelihoods)} is different "
+                f"from the number of specified gammas {len(gammas)}. Please specify "
+                "a guidance strength for each likelihood."
+            )
+            self.N_MC_samples = N_MC_samples
+            print('initialised MC_SDA_IS_1 with N_MC_samples = ', self.N_MC_samples)
+
+    def sample_x_hats(self, y: Tensor, x_: Tensor, t: Tensor, n_smples=1, sigma_y=1.0) -> Tensor:
+        # print('sampling x_hats with N_MC_samples = ', n_smples)
+        mu, sigma = self.sde.mu(t), self.sde.sigma(t)
+        x_hats = torch.zeros((n_smples, *x_.shape), device=x_.device, dtype=x_.dtype)
+        mu_tweedie = x_ # tweedie mean  
+        Amu = self.likelihoods[0].A(mu_tweedie, self.likelihoods[0].mask.to(x_.device)).requires_grad_(True)
+        partial_A = torch.autograd.grad(Amu, mu_tweedie, torch.ones_like(mu_tweedie),retain_graph=True)[0] + 1e-12 # add small constant to avoid division by zero
+
+        mu1 = mu_tweedie + (y - Amu) / partial_A
+        std = sigma_y / partial_A
+        mvn = Normal(mu1, std)
+        x_hats = x_hats + torch.randn_like(x_hats) * std
+        log_p = mvn.log_prob(x_hats)
+
+        return x_hats, log_p
+
+    def log_p_tweedie(self, x: Tensor, t: Tensor, x_: Tensor) -> Tensor:
+        mu, sigma = self.sde.mu(t), self.sde.sigma(t)
+        x = x.detach().requires_grad_(True)
+        mu_tweedie = x_
+        std = sigma / mu
+        mvn = Normal(mu_tweedie, std)
+        log_p = mvn.log_prob(x)
+        return log_p
+
+    def forward(self, x: Tensor, t: Tensor) -> Tensor:
+        mu, sigma = self.sde.mu(t), self.sde.sigma(t)
+
+        with torch.enable_grad():
+            x = x.detach().requires_grad_(True)
+            eps = self.sde.noise_prediction_fn(x, t) # effectively the unconditional score, right??
+            x_ = (x - sigma * eps) / mu # tweedie mean
+            device = x.device
+
+            log_probs = []
+            if len(self.likelihoods) == 1: # conditioning only on the initial consitions, no observations
+                for likelihood, gamma in zip([self.likelihoods[0]], [self.gammas[0]]):
+                    err = likelihood.err(x_)
+                    var = likelihood.std ** 2 + gamma * (sigma / mu) ** 2
+                    log_probs.append(-(err ** 2 / var).sum() / 2)
+
+                # apply guidance
+                for log_prob in log_probs:
+                    s, = torch.autograd.grad(log_prob, x, retain_graph=True)
+                    eps = eps - sigma * s # why is this premultiplied by sigma?
+
+
+            elif len(self.likelihoods) == 2:
+
+                # AR conditioning likelihoods - effectively regular SDA
+                for likelihood, gamma in zip([self.likelihoods[1]], [self.gammas[1]]):
+                    err = likelihood.err(x_)
+                    var = likelihood.std ** 2 + gamma * (sigma / mu) ** 2
+                    log_probs.append(-(err ** 2 / var).sum() / 2)
+                
+                for log_prob in log_probs:
+                    s, = torch.autograd.grad(log_prob, x, retain_graph=True)
+                    eps = eps - sigma * s # why is this premultiplied by sigma?
+
+                # apply guidance based on observation samples
+                log_probs_guidance = []
+                for likelihood, gamma in zip([self.likelihoods[0]], [self.gammas[0]]):
+                    y = likelihood.y.to(device)
+                    sigma_y = likelihood.std
+                    x_hats, log_p_proposal = self.sample_x_hats(y, x_, t, n_smples = self.N_MC_samples, sigma_y = sigma_y)
+                    x_hats = x_hats * likelihood.mask.to(device)
+                    log_p_proposal = log_p_proposal * likelihood.mask.to(device)
+
+                    log_p_target = torch.zeros_like(log_p_proposal)# function not vectorisable ... self.log_p_tweedie(x_hats, t)
+                    
+                    for i in range(self.N_MC_samples):
+                        log_p_target[i] = self.log_p_tweedie(x_hats[i], t, x_)
+                    
+                    log_p_likelihood = likelihood.log_prob(x_hats, sigma, mu, gamma = 0.05)
+                    log_prob = log_p_likelihood - log_p_proposal + log_p_target
+                    log_prob = torch.logsumexp(log_prob, dim = 0)
+                    log_prob = log_prob * likelihood.mask.to(device)
+                    log_prob = log_prob.sum()
+                    log_probs_guidance.append(log_prob)
+
+                # apply guidance
+                for log_prob in log_probs_guidance:
+                    s, = torch.autograd.grad(log_prob, x, retain_graph=True)
+                    eps = eps - sigma * s * self.likelihoods[0].mask.to(eps.device) # why is this premultiplied by sigma?
+
+        return eps
+
+
+
 
 class DPS(GuidedScore):
     def __init__(
